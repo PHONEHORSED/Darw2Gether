@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Inky Draw & Lobby 1234</title>
+  <script src="//unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; user-select: none; }
+    body { margin: 0; background: #121212; color: #f0f0f0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 10px; }
+    .card { background: #1e1e1e; padding: 18px; border-radius: 12px; width: 100%; max-width: 900px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    .login-box { max-width: 400px; margin: auto; text-align: center; }
+    input { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; user-select: text; }
+    button { padding: 10px 16px; border: none; border-radius: 8px; background: #4f46e5; color: white; font-size: 15px; font-weight: bold; cursor: pointer; }
+    button:hover { background: #4338ca; }
+    button:disabled { background: #555; cursor: not-allowed; }
+    .error { color: #f87171; font-size: 14px; min-height: 20px; margin-top: 8px; }
+
+    /* Shared Top Bar & Layout */
+    #app-screen { display: none; flex-direction: column; gap: 12px; }
+    .top-bar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+    .badge { background: #2a2a2a; padding: 4px 10px; border-radius: 6px; font-size: 13px; }
+    .main-area { display: flex; gap: 12px; flex-wrap: wrap; }
+    .stage-wrap { flex: 2; min-width: 310px; display: flex; flex-direction: column; gap: 8px; position: relative; }
+    canvas { border-radius: 8px; width: 100%; height: 380px; touch-action: none; display: block; }
+    #lobby-canvas { background: #18181b; border: 1px solid #333; }
+    #draw-canvas { background: #ffffff; cursor: crosshair; display: none; }
+
+    /* Built-in Joystick */
+    .joystick-area { display: flex; align-items: center; justify-content: space-between; background: #18181b; padding: 10px 16px; border-radius: 8px; border: 1px solid #333; }
+    #joy-base { width: 90px; height: 90px; border-radius: 50%; background: #27272a; border: 2px solid #4f46e5; position: relative; touch-action: none; cursor: pointer; }
+    #joy-knob { width: 38px; height: 38px; border-radius: 50%; background: #6366f1; position: absolute; top: 24px; left: 24px; pointer-events: none; }
+
+    /* Drawing Tools */
+    #draw-tools { display: none; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .color-btn { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #444; padding: 0; }
+
+    /* Chat Sidebar */
+    .chat-wrap { flex: 1; min-width: 250px; display: flex; flex-direction: column; height: 485px; background: #181818; border-radius: 8px; padding: 10px; border: 1px solid #333; }
+    #scoreboard { font-size: 12px; color: #a5b4fc; border-bottom: 1px solid #333; padding-bottom: 6px; margin-bottom: 6px; }
+    #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-size: 14px; margin-bottom: 8px; }
+    .msg { background: #2a2a2a; padding: 6px 10px; border-radius: 6px; word-wrap: break-word; }
+    .msg.sys { background: transparent; color: #9ca3af; font-style: italic; font-size: 13px; }
+    .msg.win { background: #065f46; color: #ecfdf5; font-weight: bold; }
+    .chat-form { display: flex; gap: 6px; }
+    .chat-form input { margin: 0; padding: 8px; font-size: 14px; }
+
+    /* Yes/No Guess Pop-up Modal */
+    #guess-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); justify-content: center; align-items: center; z-index: 99; padding: 16px; }
+    .modal-card { background: #1e1e1e; border: 2px solid #4f46e5; padding: 24px; border-radius: 12px; max-width: 380px; width: 100%; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.7); }
+    .modal-btns { display: flex; gap: 12px; margin-top: 16px; }
+    .modal-btns button { flex: 1; font-size: 16px; padding: 12px; }
+  </style>
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div class="card login-box" id="auth-screen">
+    <h2>Inky Room 1234</h2>
+    <p style="font-size: 14px; color: #aaa;">Enter a unique nickname to join the lobby.</p>
+    <input type="text" id="username-input" placeholder="Nickname..." maxlength="16" />
+    <button id="join-btn" style="width: 100%; margin-top: 8px;">Join Room</button>
+    <div class="error" id="error-msg"></div>
+  </div>
+
+  <!-- MAIN APP SCREEN -->
+  <div class="card" id="app-screen">
+    <div class="top-bar">
+      <div>
+        <span class="badge">Room <strong>1234</strong></span>
+        <span class="badge">You: <strong id="me-label"></strong></span>
+        <span class="badge" id="role-badge" style="color:#fbbf24;">Player</span>
+      </div>
+      <div id="status-banner" style="color: #a5b4fc; font-weight: bold;">Intermission — Hang out!</div>
+      <div>
+        <button id="start-btn" style="display:none; background:#059669;">Start Round</button>
+        <button id="end-btn" style="display:none; background:#dc2626;">End Round</button>
+      </div>
+    </div>
+
+    <div class="main-area">
+      <div class="stage-wrap">
+        <!-- Intermission Arena -->
+        <canvas id="lobby-canvas" width="600" height="380"></canvas>
+        <!-- Drawing Board -->
+        <canvas id="draw-canvas" width="600" height="380"></canvas>
+
+        <!-- Joystick (Shown in Intermission) -->
+        <div class="joystick-area" id="joystick-box">
+          <div style="font-size: 13px; color: #aaa;">
+            <strong>Intermission Arena</strong><br/>
+            Drag the joystick (or use WASD / Arrows) to move your square!
+          </div>
+          <div id="joy-base"><div id="joy-knob"></div></div>
+        </div>
+
+        <!-- Drawing Tools (Shown to Drawer during Round) -->
+        <div id="draw-tools">
+          <button class="color-btn" style="background:#000000" data-color="#000000"></button>
+          <button class="color-btn" style="background:#ef4444" data-color="#ef4444"></button>
+          <button class="color-btn" style="background:#3b82f6" data-color="#3b82f6"></button>
+          <button class="color-btn" style="background:#22c55e" data-color="#22c55e"></button>
+          <button class="color-btn" style="background:#eab308" data-color="#eab308"></button>
+          <button class="color-btn" style="background:#ffffff" data-color="#ffffff" title="Eraser"></button>
+          <button id="clear-btn" style="background:#dc2626; margin-left:auto; padding:6px 12px; font-size:13px;">Clear</button>
+        </div>
+      </div>
+
+      <!-- Chat & Guesses -->
+      <div class="chat-wrap">
+        <div id="scoreboard">Scores: Waiting...</div>
+        <div id="messages"></div>
+        <form class="chat-form" id="chat-form">
+          <input type="text" id="chat-input" placeholder="Chat or type guess..." autocomplete="off" required />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- DRAWER APPROVAL POP-UP -->
+  <div id="guess-modal">
+    <div class="modal-card">
+      <h3 style="margin-top:0; color:#a5b4fc;">Is this true?</h3>
+      <p style="font-size: 15px; color: #ccc;"><strong id="modal-guesser"></strong> guessed:</p>
+      <div id="modal-guess-text" style="font-size: 22px; font-weight: bold; background: #2a2a2a; padding: 12px; border-radius: 8px; margin: 10px 0;"></div>
+      <div class="modal-btns">
+        <button id="yes-btn" style="background: #059669;">Yes!</button>
+        <button id="no-btn" style="background: #dc2626;">No</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const TOPIC = "inky-lobby-draw-1234/events";
+    const BROKER = "wss://broker.hivemq.com:8884/mqtt";
+    const COLORS = ["#ef4444", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ec4899", "#14b8a6", "#f97316"];
+
+    let client = null;
+    let myName = "";
+    let myJoinTime = 0;
+    let isHost = false;
+    let mode = "intermission"; // "intermission" | "playing"
+    let currentDrawer = "";
+
+    // Players map: name -> { x, y, color, score, joinTime, lastSeen }
+    let players = {};
+    let guessQueue = [];
+    let activeGuess = null;
+
+    // Canvases
+    const lobbyCanvas = document.getElementById("lobby-canvas");
+    const lCtx = lobbyCanvas.getContext("2d");
+    const drawCanvas = document.getElementById("draw-canvas");
+    const dCtx = drawCanvas.getContext("2d");
+    dCtx.lineCap = "round";
+
+    // UI Refs
+    const joinBtn = document.getElementById("join-btn");
+    const errorMsg = document.getElementById("error-msg");
+    const messagesDiv = document.getElementById("messages");
+    const startBtn = document.getElementById("start-btn");
+    const endBtn = document.getElementById("end-btn");
+    const statusBanner = document.getElementById("status-banner");
+
+    // 1. JOIN & UNIQUE USERNAME CHECK
+    joinBtn.addEventListener("click", () => {
+      if (typeof mqtt === "undefined") {
+        errorMsg.textContent = "Network library blocked or offline.";
+        return;
+      }
+      const raw = document.getElementById("username-input").value.trim().replace(/[^a-zA-Z0-9_-]/g, "");
+      if (raw.length < 2) {
+        errorMsg.textContent = "Enter at least 2 letters/numbers.";
+        return;
+      }
+
+      joinBtn.disabled = true;
+      errorMsg.textContent = "Checking room...";
+      client = mqtt.connect(BROKER);
+
+      client.on("connect", () => {
+        client.subscribe(TOPIC, () => {
+          sendPacket({ type: "ping-room" });
+
+          setTimeout(() => {
+            const taken = Object.keys(players).some(p => p.toLowerCase() === raw.toLowerCase());
+            if (taken) {
+              errorMsg.textContent = "That username is already in the room! Pick another.";
+              joinBtn.disabled = false;
+              client.end();
+              return;
+            }
+
+            myName = raw;
+            myJoinTime = Date.now();
+            const myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+            players[myName] = {
+              x: 100 + Math.random() * 400,
+              y: 100 + Math.random() * 180,
+              color: myColor,
+              score: 0,
+              joinTime: myJoinTime,
+              lastSeen: Date.now()
+            };
+
+            document.getElementById("me-label").textContent = myName;
+            document.getElementById("auth-screen").style.display = "none";
+            document.getElementById("app-screen").style.display = "flex";
+
+            sendPacket({ type: "join", user: myName, player: players[myName] });
+            addSys("Joined room 1234!");
+            evaluateHost();
+            updateScoreboard();
+          }, 900);
+        });
+      });
+
+      client.on("message", (topic, payload) => {
+        try { handlePacket(JSON.parse(payload.toString())); } catch (e) {}
+      });
+    });
+
+    function sendPacket(obj) {
+      if (client && client.connected) client.publish(TOPIC, JSON.stringify(obj));
+    }
+
+    // 2. NETWORK PACKET HANDLER
+    function handlePacket(data) {
+      if (data.type === "ping-room" && myName) {
+        sendPacket({ type: "presence", user: myName, player: players[myName], mode, currentDrawer });
+      } else if (data.type === "presence" && data.user && data.user !== myName) {
+        players[data.user] = { ...data.player, lastSeen: Date.now() };
+        if (data.mode === "playing" && mode !== "playing") {
+          enterPlayMode(data.currentDrawer, false);
+        }
+        evaluateHost();
+        updateScoreboard();
+      } else if (data.type === "join" && data.user !== myName) {
+        players[data.user] = { ...data.player, lastSeen: Date.now() };
+        addSys(`${data.user} joined the lobby.`);
+        sendPacket({ type: "presence", user: myName, player: players[myName], mode, currentDrawer });
+        evaluateHost();
+        updateScoreboard();
+      } else if (data.type === "move" && data.user !== myName && players[data.user]) {
+        players[data.user].x = data.x;
+        players[data.user].y = data.y;
+        players[data.user].lastSeen = Date.now();
+      } else if (data.type === "start-round") {
+        enterPlayMode(data.drawer, true);
+      } else if (data.type === "end-round") {
+        if (data.winner && players[data.winner]) {
+          players[data.winner].score = (players[data.winner].score || 0) + 1;
+        }
+        enterIntermission(data.reason);
+        updateScoreboard();
+      } else if (data.type === "draw" && data.user !== myName) {
+        drawLine(data.x0, data.y0, data.x1, data.y1, data.color);
+      } else if (data.type === "clear" && data.user !== myName) {
+        dCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      } else if (data.type === "chat") {
+        if (data.user !== myName) addMsg(data.user, data.text);
+        // If playing and I am the randomly chosen drawer, trigger Yes/No pop-up!
+        if (mode === "playing" && myName === currentDrawer && data.user !== myName) {
+          queueGuessPopup(data.user, data.text);
+        }
+      }
+    }
+
+    // Determine if I joined earliest (Host)
+    function evaluateHost() {
+      if (!myName) return;
+      const all = Object.entries(players);
+      all.sort((a, b) => a[1].joinTime - b[1].joinTime);
+      const earliestUser = all[0] ? all[0][0] : myName;
+      isHost = (earliestUser === myName);
+
+      document.getElementById("role-badge").textContent = isHost ? "Host" : "Player";
+      startBtn.style.display = (isHost && mode === "intermission") ? "inline-block" : "none";
+      endBtn.style.display = (isHost && mode === "playing") ? "inline-block" : "none";
+    }
+
+    // 3. HOST START / END ROUND
+    startBtn.addEventListener("click", () => {
+      const names = Object.keys(players);
+      const chosen = names[Math.floor(Math.random() * names.length)];
+      sendPacket({ type: "start-round", drawer: chosen });
+      enterPlayMode(chosen, true);
+    });
+
+    endBtn.addEventListener("click", () => {
+      const msg = "Host ended the round!";
+      sendPacket({ type: "end-round", reason: msg });
+      enterIntermission(msg);
+    });
+
+    function enterPlayMode(drawer, announce) {
+      mode = "playing";
+      currentDrawer = drawer;
+      guessQueue = [];
+      activeGuess = null;
+      document.getElementById("guess-modal").style.display = "none";
+
+      lobbyCanvas.style.display = "none";
+      document.getElementById("joystick-box").style.display = "none";
+      drawCanvas.style.display = "block";
+      dCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+
+      const amIDrawer = (myName === drawer);
+      document.getElementById("draw-tools").style.display = amIDrawer ? "flex" : "none";
+      document.getElementById("chat-input").disabled = amIDrawer;
+      document.getElementById("chat-input").placeholder = amIDrawer ? "You are drawing! Wait for guesses..." : "Type your guess in chat!";
+      statusBanner.textContent = amIDrawer ? "YOUR TURN TO DRAW!" : `${drawer} is drawing — Guess in chat!`;
+
+      if (announce) addSys(`Round started! ${drawer} was randomly picked to draw.`);
+      evaluateHost();
+    }
+
+    function enterIntermission(reasonText) {
+      mode = "intermission";
+      currentDrawer = "";
+      guessQueue = [];
+      activeGuess = null;
+      document.getElementById("guess-modal").style.display = "none";
+
+      drawCanvas.style.display = "none";
+      document.getElementById("draw-tools").style.display = "none";
+      lobbyCanvas.style.display = "block";
+      document.getElementById("joystick-box").style.display = "flex";
+
+      document.getElementById("chat-input").disabled = false;
+      document.getElementById("chat-input").placeholder = "Chat in intermission...";
+      statusBanner.textContent = "Intermission — Waiting for host to start...";
+
+      if (reasonText) addWin(reasonText);
+      evaluateHost();
+    }
+
+    // 4. DRAWER YES/NO POP-UP QUEUE
+    function queueGuessPopup(guesser, text) {
+      guessQueue.push({ guesser, text });
+      if (!activeGuess) showNextGuess();
+    }
+
+    function showNextGuess() {
+      if (guessQueue.length === 0 || mode !== "playing") {
+        activeGuess = null;
+        document.getElementById("guess-modal").style.display = "none";
+        return;
+      }
+      activeGuess = guessQueue.shift();
+      document.getElementById("modal-guesser").textContent = activeGuess.guesser;
+      document.getElementById("modal-guess-text").textContent = `"${activeGuess.text}"`;
+      document.getElementById("guess-modal").style.display = "flex";
+    }
+
+    document.getElementById("yes-btn").addEventListener("click", () => {
+      if (!activeGuess) return;
+      const winner = activeGuess.guesser;
+      const guess = activeGuess.text;
+      if (players[winner]) players[winner].score = (players[winner].score || 0) + 1;
+      const winMsg = `${winner} guessed right ("${guess}")! +1 Point!`;
+      sendPacket({ type: "end-round", winner, reason: winMsg });
+      enterIntermission(winMsg);
+      updateScoreboard();
+    });
+
+    document.getElementById("no-btn").addEventListener("click", () => {
+      showNextGuess();
+    });
+
+    // 5. BUILT-IN JOYSTICK & KEYBOARD MOVEMENT (INTERMISSION)
+    let joyVec = { x: 0, y: 0 };
+    const joyBase = document.getElementById("joy-base");
+    const joyKnob = document.getElementById("joy-knob");
+    let joyDragging = false;
+
+    function updateJoystick(clientX, clientY) {
+      const rect = joyBase.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      let dx = clientX - centerX;
+      let dy = clientY - centerY;
+      const maxDist = 26;
+      const dist = Math.hypot(dx, dy);
+      if (dist > maxDist) {
+        dx = (dx / dist) * maxDist;
+        dy = (dy / dist) * maxDist;
+      }
+      joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+      joyVec.x = dx / maxDist;
+      joyVec.y = dy / maxDist;
+    }
+
+    function resetJoystick() {
+      joyDragging = false;
+      joyKnob.style.transform = "translate(0px, 0px)";
+      joyVec = { x: 0, y: 0 };
+    }
+
+    joyBase.addEventListener("mousedown", (e) => { joyDragging = true; updateJoystick(e.clientX, e.clientY); });
+    window.addEventListener("mousemove", (e) => { if (joyDragging) updateJoystick(e.clientX, e.clientY); });
+    window.addEventListener("mouseup", resetJoystick);
+
+    joyBase.addEventListener("touchstart", (e) => { e.preventDefault(); joyDragging = true; updateJoystick(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+    joyBase.addEventListener("touchmove", (e) => { e.preventDefault(); if (joyDragging) updateJoystick(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+    joyBase.addEventListener("touchend", resetJoystick);
+
+    const keys = {};
+    window.addEventListener("keydown", (e) => { if (document.activeElement.tagName !== "INPUT") keys[e.key.toLowerCase()] = true; });
+    window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+    let lastNetSend = 0;
+    function gameLoop() {
+      if (myName && players[myName] && mode === "intermission") {
+        let vx = joyVec.x;
+        let vy = joyVec.y;
+        if (keys["w"] || keys["arrowup"]) vy -= 1;
+        if (keys["s"] || keys["arrowdown"]) vy += 1;
+        if (keys["a"] || keys["arrowleft"]) vx -= 1;
+        if (keys["d"] || keys["arrowright"]) vx += 1;
+
+        if (vx !== 0 || vy !== 0) {
+          const p = players[myName];
+          p.x = Math.max(15, Math.min(lobbyCanvas.width - 15, p.x + vx * 3.5));
+          p.y = Math.max(15, Math.min(lobbyCanvas.height - 15, p.y + vy * 3.5));
+
+          if (Date.now() - lastNetSend > 50) {
+            lastNetSend = Date.now();
+            sendPacket({ type: "move", user: myName, x: Math.round(p.x), y: Math.round(p.y) });
+          }
+        }
+      }
+
+      // Render Intermission Arena
+      if (mode === "intermission") {
+        lCtx.clearRect(0, 0, lobbyCanvas.width, lobbyCanvas.height);
+        // Subtle grid
+        lCtx.strokeStyle = "#27272a";
+        lCtx.lineWidth = 1;
+        for (let gx = 0; gx < lobbyCanvas.width; gx += 40) { lCtx.beginPath(); lCtx.moveTo(gx, 0); lCtx.lineTo(gx, lobbyCanvas.height); lCtx.stroke(); }
+        for (let gy = 0; gy < lobbyCanvas.height; gy += 40) { lCtx.beginPath(); lCtx.moveTo(0, gy); lCtx.lineTo(lobbyCanvas.width, gy); lCtx.stroke(); }
+
+        for (const [name, p] of Object.entries(players)) {
+          lCtx.fillStyle = p.color;
+          lCtx.fillRect(p.x - 14, p.y - 14, 28, 28);
+          lCtx.strokeStyle = "#ffffff";
+          lCtx.lineWidth = (name === myName) ? 2 : 0;
+          if (name === myName) lCtx.strokeRect(p.x - 14, p.y - 14, 28, 28);
+
+          lCtx.fillStyle = "#ffffff";
+          lCtx.font = "bold 12px sans-serif";
+          lCtx.textAlign = "center";
+          lCtx.fillText(name, p.x, p.y - 20);
+        }
+      }
+      requestAnimationFrame(gameLoop);
+    }
+    requestAnimationFrame(gameLoop);
+
+    // 6. DRAWING BOARD LOGIC
+    let currentColor = "#000000";
+    let isDrawing = false;
+    let lastPos = null;
+
+    function getDrawPos(e) {
+      const rect = drawCanvas.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: (cx - rect.left) * (drawCanvas.width / rect.width),
+        y: (cy - rect.top) * (drawCanvas.height / rect.height)
+      };
+    }
+
+    function drawLine(x0, y0, x1, y1, color) {
+      dCtx.strokeStyle = color;
+      dCtx.lineWidth = color === "#ffffff" ? 18 : 4;
+      dCtx.beginPath();
+      dCtx.moveTo(x0, y0);
+      dCtx.lineTo(x1, y1);
+      dCtx.stroke();
+    }
+
+    drawCanvas.addEventListener("mousedown", (e) => { if (mode === "playing" && myName === currentDrawer) { isDrawing = true; lastPos = getDrawPos(e); } });
+    drawCanvas.addEventListener("mousemove", (e) => {
+      if (!isDrawing) return;
+      const pos = getDrawPos(e);
+      drawLine(lastPos.x, lastPos.y, pos.x, pos.y, currentColor);
+      sendPacket({ type: "draw", user: myName, x0: lastPos.x, y0: lastPos.y, x1: pos.x, y1: pos.y, color: currentColor });
+      lastPos = pos;
+    });
+    window.addEventListener("mouseup", () => { isDrawing = false; });
+
+    drawCanvas.addEventListener("touchstart", (e) => { if (mode === "playing" && myName === currentDrawer) { e.preventDefault(); isDrawing = true; lastPos = getDrawPos(e); } }, { passive: false });
+    drawCanvas.addEventListener("touchmove", (e) => {
+      if (!isDrawing) return;
+      e.preventDefault();
+      const pos = getDrawPos(e);
+      drawLine(lastPos.x, lastPos.y, pos.x, pos.y, currentColor);
+      sendPacket({ type: "draw", user: myName, x0: lastPos.x, y0: lastPos.y, x1: pos.x, y1: pos.y, color: currentColor });
+      lastPos = pos;
+    }, { passive: false });
+    window.addEventListener("touchend", () => { isDrawing = false; });
+
+    document.querySelectorAll(".color-btn").forEach(b => b.addEventListener("click", () => { currentColor = b.dataset.color; }));
+    document.getElementById("clear-btn").addEventListener("click", () => {
+      dCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      sendPacket({ type: "clear", user: myName });
+    });
+
+    // 7. CHAT & HELPERS
+    document.getElementById("chat-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const input = document.getElementById("chat-input");
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      addMsg(myName, text);
+      sendPacket({ type: "chat", user: myName, text });
+    });
+
+    function addMsg(user, text) {
+      const div = document.createElement("div");
+      div.className = "msg";
+      div.innerHTML = `<strong>${user.replace(/</g, "&lt;")}:</strong> ${text.replace(/</g, "&lt;")}`;
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function addSys(text) {
+      const div = document.createElement("div");
+      div.className = "msg sys";
+      div.textContent = text;
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function addWin(text) {
+      const div = document.createElement("div");
+      div.className = "msg win";
+      div.textContent = text;
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function updateScoreboard() {
+      const list = Object.entries(players)
+        .map(([n, p]) => `${n}: ${p.score || 0}`)
+        .join(" | ");
+      document.getElementById("scoreboard").textContent = "Scores: " + (list || "None");
+    }
+  </script>
+</body>
+</html>
