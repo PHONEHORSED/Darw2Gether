@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Inky Draw & Lobby 1234</title>
+  <title>Inky Draw & Tig 1234</title>
   <script src="//unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; user-select: none; }
@@ -42,6 +42,7 @@
     .msg { background: #2a2a2a; padding: 6px 10px; border-radius: 6px; word-wrap: break-word; }
     .msg.sys { background: transparent; color: #9ca3af; font-style: italic; font-size: 13px; }
     .msg.win { background: #065f46; color: #ecfdf5; font-weight: bold; }
+    .msg.tig { background: #7f1d1d; color: #fecaca; font-weight: bold; font-size: 13px; }
     .chat-form { display: flex; gap: 6px; }
     .chat-form input { margin: 0; padding: 8px; font-size: 14px; }
 
@@ -56,7 +57,7 @@
 
   <!-- LOGIN SCREEN -->
   <div class="card login-box" id="auth-screen">
-    <h2>Inky Room 1234</h2>
+    <h2>Inky Draw & Tig — Room 1234</h2>
     <p style="font-size: 14px; color: #aaa;">Enter a unique nickname to join the lobby.</p>
     <input type="text" id="username-input" placeholder="Nickname..." maxlength="16" />
     <button id="join-btn" style="width: 100%; margin-top: 8px;">Join Room</button>
@@ -71,16 +72,16 @@
         <span class="badge">You: <strong id="me-label"></strong></span>
         <span class="badge" id="role-badge" style="color:#fbbf24;">Player</span>
       </div>
-      <div id="status-banner" style="color: #a5b4fc; font-weight: bold;">Intermission — Hang out!</div>
+      <div id="status-banner" style="color: #a5b4fc; font-weight: bold;">Intermission Tig!</div>
       <div>
-        <button id="start-btn" style="display:none; background:#059669;">Start Round</button>
+        <button id="start-btn" style="display:none; background:#059669;">Start Drawing Round</button>
         <button id="end-btn" style="display:none; background:#dc2626;">End Round</button>
       </div>
     </div>
 
     <div class="main-area">
       <div class="stage-wrap">
-        <!-- Intermission Arena -->
+        <!-- Intermission Tig Arena -->
         <canvas id="lobby-canvas" width="600" height="380"></canvas>
         <!-- Drawing Board -->
         <canvas id="draw-canvas" width="600" height="380"></canvas>
@@ -88,8 +89,8 @@
         <!-- Joystick (Shown in Intermission) -->
         <div class="joystick-area" id="joystick-box">
           <div style="font-size: 13px; color: #aaa;">
-            <strong>Intermission Arena</strong><br/>
-            Drag the joystick (or use WASD / Arrows) to move your square!
+            <strong id="tig-instruction" style="color:#f87171;">Intermission Tig!</strong><br/>
+            Use the joystick (or WASD / Arrows) to chase or run away!
           </div>
           <div id="joy-base"><div id="joy-knob"></div></div>
         </div>
@@ -132,9 +133,9 @@
   </div>
 
   <script>
-    const TOPIC = "inky-lobby-draw-1234/events";
+    const TOPIC = "inky-lobby-tig-1234/events";
     const BROKER = "wss://broker.hivemq.com:8884/mqtt";
-    const COLORS = ["#ef4444", "#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ec4899", "#14b8a6", "#f97316"];
+    const COLORS = ["#3b82f6", "#22c55e", "#eab308", "#a855f7", "#ec4899", "#14b8a6", "#f97316", "#06b6d4"];
 
     let client = null;
     let myName = "";
@@ -142,6 +143,10 @@
     let isHost = false;
     let mode = "intermission"; // "intermission" | "playing"
     let currentDrawer = "";
+
+    // Tig state
+    let itPlayer = "";
+    let lastTagTime = 0;
 
     // Players map: name -> { x, y, color, score, joinTime, lastSeen }
     let players = {};
@@ -196,21 +201,24 @@
             myJoinTime = Date.now();
             const myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
             players[myName] = {
-              x: 100 + Math.random() * 400,
-              y: 100 + Math.random() * 180,
+              x: 80 + Math.random() * 440,
+              y: 80 + Math.random() * 220,
               color: myColor,
               score: 0,
               joinTime: myJoinTime,
               lastSeen: Date.now()
             };
 
+            if (!itPlayer) itPlayer = myName;
+
             document.getElementById("me-label").textContent = myName;
             document.getElementById("auth-screen").style.display = "none";
             document.getElementById("app-screen").style.display = "flex";
 
-            sendPacket({ type: "join", user: myName, player: players[myName] });
+            sendPacket({ type: "join", user: myName, player: players[myName], itPlayer });
             addSys("Joined room 1234!");
             evaluateHost();
+            updateTigUI();
             updateScoreboard();
           }, 900);
         });
@@ -228,24 +236,35 @@
     // 2. NETWORK PACKET HANDLER
     function handlePacket(data) {
       if (data.type === "ping-room" && myName) {
-        sendPacket({ type: "presence", user: myName, player: players[myName], mode, currentDrawer });
+        sendPacket({ type: "presence", user: myName, player: players[myName], mode, currentDrawer, itPlayer });
       } else if (data.type === "presence" && data.user && data.user !== myName) {
         players[data.user] = { ...data.player, lastSeen: Date.now() };
+        if (data.itPlayer && players[data.itPlayer]) itPlayer = data.itPlayer;
         if (data.mode === "playing" && mode !== "playing") {
           enterPlayMode(data.currentDrawer, false);
         }
         evaluateHost();
+        updateTigUI();
         updateScoreboard();
       } else if (data.type === "join" && data.user !== myName) {
         players[data.user] = { ...data.player, lastSeen: Date.now() };
-        addSys(`${data.user} joined the lobby.`);
-        sendPacket({ type: "presence", user: myName, player: players[myName], mode, currentDrawer });
+        if (!itPlayer || !players[itPlayer]) itPlayer = data.itPlayer || myName;
+        addSys(`${data.user} joined the Tig arena!`);
+        sendPacket({ type: "presence", user: myName, player: players[myName], mode, currentDrawer, itPlayer });
         evaluateHost();
+        updateTigUI();
         updateScoreboard();
       } else if (data.type === "move" && data.user !== myName && players[data.user]) {
         players[data.user].x = data.x;
         players[data.user].y = data.y;
         players[data.user].lastSeen = Date.now();
+      } else if (data.type === "tig-tagged") {
+        if (data.newIt && players[data.newIt]) {
+          itPlayer = data.newIt;
+          lastTagTime = Date.now();
+          addTig(`${data.by} tigged ${data.newIt}! ${data.newIt} is now IT!`);
+          updateTigUI();
+        }
       } else if (data.type === "start-round") {
         enterPlayMode(data.drawer, true);
       } else if (data.type === "end-round") {
@@ -260,10 +279,27 @@
         dCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
       } else if (data.type === "chat") {
         if (data.user !== myName) addMsg(data.user, data.text);
-        // If playing and I am the randomly chosen drawer, trigger Yes/No pop-up!
         if (mode === "playing" && myName === currentDrawer && data.user !== myName) {
           queueGuessPopup(data.user, data.text);
         }
+      }
+    }
+
+    function updateTigUI() {
+      if (mode !== "intermission") return;
+      const instr = document.getElementById("tig-instruction");
+      if (Object.keys(players).length < 2) {
+        statusBanner.textContent = "Intermission Tig — Waiting for players...";
+        instr.textContent = "Practice moving while waiting for friends to join!";
+        instr.style.color = "#a5b4fc";
+      } else if (itPlayer === myName) {
+        statusBanner.textContent = "YOU ARE IT! Chase someone!";
+        instr.textContent = "YOU ARE IT! Run into another square to tig them!";
+        instr.style.color = "#ef4444";
+      } else {
+        statusBanner.textContent = `${itPlayer} is IT! Run away!`;
+        instr.textContent = `${itPlayer} is IT! Dodge their square!`;
+        instr.style.color = "#34d399";
       }
     }
 
@@ -330,9 +366,9 @@
 
       document.getElementById("chat-input").disabled = false;
       document.getElementById("chat-input").placeholder = "Chat in intermission...";
-      statusBanner.textContent = "Intermission — Waiting for host to start...";
 
       if (reasonText) addWin(reasonText);
+      updateTigUI();
       evaluateHost();
     }
 
@@ -369,7 +405,7 @@
       showNextGuess();
     });
 
-    // 5. BUILT-IN JOYSTICK & KEYBOARD MOVEMENT (INTERMISSION)
+    // 5. BUILT-IN JOYSTICK, KEYBOARD MOVEMENT & TIG COLLISION
     let joyVec = { x: 0, y: 0 };
     const joyBase = document.getElementById("joy-base");
     const joyKnob = document.getElementById("joy-knob");
@@ -420,38 +456,70 @@
         if (keys["a"] || keys["arrowleft"]) vx -= 1;
         if (keys["d"] || keys["arrowright"]) vx += 1;
 
+        // Slight speed boost if you are IT!
+        const speed = (itPlayer === myName) ? 4.1 : 3.6;
+
         if (vx !== 0 || vy !== 0) {
           const p = players[myName];
-          p.x = Math.max(15, Math.min(lobbyCanvas.width - 15, p.x + vx * 3.5));
-          p.y = Math.max(15, Math.min(lobbyCanvas.height - 15, p.y + vy * 3.5));
+          p.x = Math.max(16, Math.min(lobbyCanvas.width - 16, p.x + vx * speed));
+          p.y = Math.max(16, Math.min(lobbyCanvas.height - 16, p.y + vy * speed));
 
-          if (Date.now() - lastNetSend > 50) {
+          if (Date.now() - lastNetSend > 45) {
             lastNetSend = Date.now();
             sendPacket({ type: "move", user: myName, x: Math.round(p.x), y: Math.round(p.y) });
           }
         }
+
+        // Check if I am IT and touching another square (with 2-second tag-back protection)
+        if (itPlayer === myName && Date.now() - lastTagTime > 2000) {
+          const me = players[myName];
+          for (const [otherName, other] of Object.entries(players)) {
+            if (otherName === myName) continue;
+            if (Math.abs(me.x - other.x) < 28 && Math.abs(me.y - other.y) < 28) {
+              itPlayer = otherName;
+              lastTagTime = Date.now();
+              sendPacket({ type: "tig-tagged", by: myName, newIt: otherName });
+              addTig(`You tigged ${otherName}! Run!`);
+              updateTigUI();
+              break;
+            }
+          }
+        }
       }
 
-      // Render Intermission Arena
+      // Render Intermission Tig Arena
       if (mode === "intermission") {
         lCtx.clearRect(0, 0, lobbyCanvas.width, lobbyCanvas.height);
-        // Subtle grid
+
+        // Arena grid
         lCtx.strokeStyle = "#27272a";
         lCtx.lineWidth = 1;
         for (let gx = 0; gx < lobbyCanvas.width; gx += 40) { lCtx.beginPath(); lCtx.moveTo(gx, 0); lCtx.lineTo(gx, lobbyCanvas.height); lCtx.stroke(); }
         for (let gy = 0; gy < lobbyCanvas.height; gy += 40) { lCtx.beginPath(); lCtx.moveTo(0, gy); lCtx.lineTo(lobbyCanvas.width, gy); lCtx.stroke(); }
 
         for (const [name, p] of Object.entries(players)) {
-          lCtx.fillStyle = p.color;
-          lCtx.fillRect(p.x - 14, p.y - 14, 28, 28);
-          lCtx.strokeStyle = "#ffffff";
-          lCtx.lineWidth = (name === myName) ? 2 : 0;
-          if (name === myName) lCtx.strokeRect(p.x - 14, p.y - 14, 28, 28);
+          const isIt = (name === itPlayer);
 
-          lCtx.fillStyle = "#ffffff";
+          // Glowing red aura if IT
+          if (isIt) {
+            lCtx.strokeStyle = "#ef4444";
+            lCtx.lineWidth = 3;
+            lCtx.strokeRect(p.x - 19, p.y - 19, 38, 38);
+          }
+
+          lCtx.fillStyle = isIt ? "#dc2626" : p.color;
+          lCtx.fillRect(p.x - 14, p.y - 14, 28, 28);
+
+          if (name === myName) {
+            lCtx.strokeStyle = "#ffffff";
+            lCtx.lineWidth = 2;
+            lCtx.strokeRect(p.x - 14, p.y - 14, 28, 28);
+          }
+
+          lCtx.fillStyle = isIt ? "#fca5a5" : "#ffffff";
           lCtx.font = "bold 12px sans-serif";
           lCtx.textAlign = "center";
-          lCtx.fillText(name, p.x, p.y - 20);
+          lCtx.fillText(isIt ? `${name} (IT!)` : name, p.x, p.y - 23);
         }
       }
       requestAnimationFrame(gameLoop);
@@ -531,6 +599,14 @@
     function addSys(text) {
       const div = document.createElement("div");
       div.className = "msg sys";
+      div.textContent = text;
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function addTig(text) {
+      const div = document.createElement("div");
+      div.className = "msg tig";
       div.textContent = text;
       messagesDiv.appendChild(div);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
